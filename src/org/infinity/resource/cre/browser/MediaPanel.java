@@ -61,11 +61,10 @@ import org.infinity.resource.cre.decoder.SpriteDecoder;
 import org.infinity.resource.cre.decoder.SpriteDecoder.SpriteBamControl;
 import org.infinity.resource.cre.decoder.util.Direction;
 import org.infinity.resource.cre.decoder.util.Sequence;
+import org.infinity.resource.graphics.AlphaApngWriter;
 import org.infinity.resource.graphics.ColorConvert;
 import org.infinity.util.Logger;
 import org.infinity.util.tuples.Couple;
-
-import ork.sevenstates.apng.APNGSeqWriter;
 
 /**
  * This panel provides controls for animation playback and related visual options.
@@ -909,7 +908,7 @@ public class MediaPanel extends JPanel {
 
     WindowBlocker blocker = new WindowBlocker(browser);
     blocker.setBlocked(true);
-    try (APNGSeqWriter writer = new APNGSeqWriter(outFile, 0)) {
+    try (AlphaApngWriter writer = new AlphaApngWriter(outFile)) {
       final RenderPanel renderer = browser.getRenderPanel();
       final SpriteBamControl ctrl = controller.getDecoder().createControl();
       ctrl.setMode(controller.getMode());
@@ -917,33 +916,15 @@ public class MediaPanel extends JPanel {
       ctrl.cycleSet(controller.cycleGet());
       ctrl.cycleSetFrameIndex(0);
 
-      final Color color = renderer.getBackgroundColor();
       Rectangle frameBounds = null;
       BufferedImage frame = null;
-      BufferedImage outputFrame = null;
 
       for (int i = 0; i < ctrl.cycleFrameCount(); i++) {
         ctrl.cycleSetFrameIndex(i);
-        Couple<Image, Rectangle> result = renderer.setFrame(ctrl, frame, frameBounds, color);
+        Couple<Image, Rectangle> result = renderer.setFrame(ctrl, frame, frameBounds, null);
         frame = (BufferedImage) result.getValue0();
         frameBounds = result.getValue1();
-
-        // APNG writer doesn't support alpha -> manually composing output frame
-        if (outputFrame == null) {
-          outputFrame = ColorConvert.createCompatibleImage(frame.getWidth(), frame.getHeight(), false);
-        }
-        Graphics2D g = outputFrame.createGraphics();
-        try {
-          g.setComposite(AlphaComposite.Src);
-          g.setColor(color);
-          g.fillRect(0, 0, outputFrame.getWidth(), outputFrame.getHeight());
-          g.setComposite(AlphaComposite.SrcOver);
-          g.drawImage(frame, 0, 0, null);
-        } finally {
-          g.dispose();
-        }
-
-        writer.writeImage(outputFrame, 1, 15);
+        writer.writeImage(frame, 1, Math.max(1, getFrameRate()));
       }
     } finally {
       blocker.setBlocked(false);
