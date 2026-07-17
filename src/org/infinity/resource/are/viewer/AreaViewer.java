@@ -2848,7 +2848,7 @@ public class AreaViewer extends ChildFrame {
         final Path temporary = Files.createTempFile(parent, ".near-infinity-are-", ".json.tmp");
         boolean complete = false;
         try (BufferedWriter writer = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
-          writer.write("{\n  \"schema\": \"org.infinity.are.collection\",\n  \"schemaVersion\": 1,\n  \"areas\": [\n");
+          writer.write("{\n  \"schema\": \"org.infinity.are.collection\",\n  \"schemaVersion\": 2,\n  \"areas\": [\n");
           for (int i = 0; i < resources.size(); i++) {
             if (monitor.isCanceled()) {
               cancel(false);
@@ -2862,7 +2862,7 @@ public class AreaViewer extends ChildFrame {
             AreResource area = null;
             try {
               area = new AreResource(entry);
-              item.put("data", serializeStructEntry(area, "$", -1, new IdentityHashMap<StructEntry, String>()));
+              item.put("data", serializeStruct(area, new IdentityHashMap<StructEntry, Boolean>()));
               result[0]++;
             } catch (Exception e) {
               Logger.error(e);
@@ -2928,61 +2928,60 @@ public class AreaViewer extends ChildFrame {
     }.execute();
   }
 
-  /** Serializes a parsed structure entry without flattening duplicate or nested fields. */
-  private static JSONObject serializeStructEntry(StructEntry entry, String path, int index,
-      IdentityHashMap<StructEntry, String> visited) {
-    final String previousPath = visited.put(entry, path);
-    if (previousPath != null) {
-      return new JSONObject().put("$ref", previousPath);
+  /** Serializes a parsed structure as compact, named data suitable for exploration. */
+  private static JSONObject serializeStruct(AbstractStruct struct, IdentityHashMap<StructEntry, Boolean> visited) {
+    if (visited.put(struct, Boolean.TRUE) != null) {
+      return new JSONObject().put("$ref", struct.getName());
     }
 
     final JSONObject object = new JSONObject();
-    if (index >= 0) {
-      object.put("index", index);
-    }
-    object.put("path", path);
-    object.put("name", entry.getName());
-    object.put("kind", entry instanceof AbstractStruct ? "struct" : "field");
-    object.put("javaType", entry.getClass().getName());
-    object.put("offset", entry.getOffset());
-    object.put("relativeOffset", entry.getParent() != null ? entry.getOffset() - entry.getParent().getOffset() : 0);
-    object.put("size", entry.getSize());
-
-    if (entry instanceof AbstractStruct) {
-      final JSONArray fields = new JSONArray();
-      final List<StructEntry> entries = ((AbstractStruct)entry).getFields();
-      for (int i = 0; i < entries.size(); i++) {
-        fields.put(serializeStructEntry(entries.get(i), path + "/fields/" + i, i, visited));
+    for (StructEntry entry : struct.getFields()) {
+      if (entry instanceof AbstractStruct) {
+        final boolean indexed = entry.getName().matches(".*\\s+\\d+$");
+        final String name = indexed ? entry.getName().replaceFirst("\\s+\\d+$", "") : entry.getName();
+        putJsonValue(object, name, serializeStruct((AbstractStruct)entry, visited), indexed);
+      } else {
+        putJsonValue(object, entry.getName(), serializeValue(entry), false);
       }
-      object.put("fields", fields);
-    } else {
-      object.put("displayValue", entry.toString());
-      if (entry instanceof IsNumeric) {
-        object.put("numericValue", ((IsNumeric)entry).getLongValue());
-      }
-      if (entry instanceof FloatNumber) {
-        object.put("floatingPointValue", ((FloatNumber)entry).getValue());
-      }
-      if (entry instanceof IsTextual) {
-        object.put("textValue", ((IsTextual)entry).getText());
-      }
-      if (entry instanceof IsReference) {
-        object.put("resourceReference", ((IsReference)entry).getResourceName());
-      }
-      object.put("rawHex", toHexString(entry.getDataBuffer()));
     }
     return object;
   }
 
-  /** Returns the remaining bytes of the specified buffer as a compact hexadecimal string. */
-  private static String toHexString(ByteBuffer buffer) {
-    final char[] digits = "0123456789abcdef".toCharArray();
-    final StringBuilder result = new StringBuilder(buffer.remaining() * 2);
-    while (buffer.hasRemaining()) {
-      final int value = buffer.get() & 0xff;
-      result.append(digits[value >>> 4]).append(digits[value & 0x0f]);
+  /** Returns the most useful JSON representation for a parsed leaf field. */
+  private static Object serializeValue(StructEntry entry) {
+    if (entry instanceof FloatNumber) {
+      return ((FloatNumber)entry).getValue();
     }
-    return result.toString();
+    if (entry instanceof IsReference) {
+      return ((IsReference)entry).getResourceName();
+    }
+    if (entry instanceof IsTextual) {
+      return ((IsTextual)entry).getText();
+    }
+    if (entry instanceof IsNumeric) {
+      final long value = ((IsNumeric)entry).getLongValue();
+      final String label = entry.toString();
+      if (label.equals(Long.toString(value))) {
+        return value;
+      }
+      return new JSONObject().put("value", value).put("label", label);
+    }
+    return entry.toString();
+  }
+
+  /** Adds a named value and promotes duplicate or indexed names to arrays. */
+  private static void putJsonValue(JSONObject object, String name, Object value, boolean forceArray) {
+    if (!object.has(name)) {
+      object.put(name, forceArray ? new JSONArray().put(value) : value);
+      return;
+    }
+
+    final Object current = object.get(name);
+    if (current instanceof JSONArray) {
+      ((JSONArray)current).put(value);
+    } else {
+      object.put(name, new JSONArray().put(current).put(value));
+    }
   }
 
   // ----------------------------- INNER CLASSES -----------------------------
