@@ -35,16 +35,21 @@ import java.awt.image.VolatileImage;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
 import java.io.BufferedOutputStream;
+import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.EventObject;
 import java.util.Hashtable;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -97,7 +102,10 @@ import javax.swing.tree.TreePath;
 
 import org.infinity.NearInfinity;
 import org.infinity.datatype.Flag;
+import org.infinity.datatype.FloatNumber;
 import org.infinity.datatype.IsNumeric;
+import org.infinity.datatype.IsReference;
+import org.infinity.datatype.IsTextual;
 import org.infinity.datatype.ResourceRef;
 import org.infinity.datatype.SectionOffset;
 import org.infinity.gui.ButtonPopupMenu;
@@ -142,6 +150,8 @@ import org.infinity.util.Logger;
 import org.infinity.util.TriState;
 import org.infinity.util.io.FileManager;
 import org.infinity.util.io.StreamUtils;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * The Area Viewer shows a selected map with its associated structures, such as actors, regions or animations.
@@ -185,6 +195,7 @@ public class AreaViewer extends ChildFrame {
   private JButton tbSettings;
   private JButton tbRefresh;
   private JButton tbExportPNG;
+  private JButton tbExportJson;
   private JTree treeControls;
   private ButtonPopupWindow bpwDayTime;
   private DayTimePanel pDayTime;
@@ -748,6 +759,10 @@ public class AreaViewer extends ChildFrame {
     tbExportPNG.setToolTipText("Export current map state as PNG");
     tbExportPNG.addActionListener(getListeners());
     toolBar.add(tbExportPNG);
+    tbExportJson = new JButton("ARE JSON", ViewerIcons.ICON_BTN_EXPORT.getIcon());
+    tbExportJson.setToolTipText("Export all ARE resources as structured JSON");
+    tbExportJson.addActionListener(getListeners());
+    toolBar.add(tbExportJson);
 
     pView.add(toolBar, BorderLayout.NORTH);
 
@@ -2791,6 +2806,179 @@ public class AreaViewer extends ChildFrame {
     });
   }
 
+  /** Exports every available ARE resource as an item in a structured JSON collection. */
+  private void exportAllAreasJson() {
+    final JFileChooser chooser = new JFileChooser(Profile.getGameRoot().toFile());
+    chooser.setDialogTitle("Export all ARE resources as JSON");
+    chooser.setDialogType(JFileChooser.SAVE_DIALOG);
+    chooser.setFileFilter(new FileNameExtensionFilter("JSON files (*.json)", "json"));
+    chooser.setSelectedFile(new File("ARE_DATA.JSON"));
+    if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+      return;
+    }
+
+    Path outputFile = chooser.getSelectedFile().toPath();
+    if (!outputFile.getFileName().toString().toLowerCase(Locale.ENGLISH).endsWith(".json")) {
+      outputFile = outputFile.resolveSibling(outputFile.getFileName() + ".json");
+    }
+    if (Files.exists(outputFile) && JOptionPane.showConfirmDialog(this,
+        "File already exists:\n" + outputFile + "\nOverwrite?", "Export ARE data",
+        JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE) != JOptionPane.YES_OPTION) {
+      return;
+    }
+
+    final Path destination = outputFile;
+    final List<ResourceEntry> resources = new ArrayList<>(ResourceFactory.getResources("ARE"));
+    resources.sort((entry1, entry2) -> entry1.getResourceName().compareToIgnoreCase(entry2.getResourceName()));
+    final ProgressMonitor monitor = new ProgressMonitor(this, "Exporting ARE resources...", "", 0,
+        resources.size());
+    monitor.setMillisToDecideToPopup(0);
+    monitor.setMillisToPopup(0);
+    WindowBlocker.blockWindow(this, true);
+
+    new SwingWorker<int[], Integer>() {
+      @Override
+      protected int[] doInBackground() throws Exception {
+        final int[] result = { 0, 0 };
+        final Path parent = (destination.getParent() != null) ? destination.getParent() : new File(".").toPath();
+        final Path temporary = Files.createTempFile(parent, ".near-infinity-are-", ".json.tmp");
+        boolean complete = false;
+        try (BufferedWriter writer = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
+          writer.write("{\n  \"schema\": \"org.infinity.are.collection\",\n  \"schemaVersion\": 1,\n  \"areas\": [\n");
+          for (int i = 0; i < resources.size(); i++) {
+            if (monitor.isCanceled()) {
+              cancel(false);
+              break;
+            }
+
+            final ResourceEntry entry = resources.get(i);
+            publish(i);
+            final JSONObject item = new JSONObject();
+            item.put("resource", entry.getResourceName());
+            AreResource area = null;
+            try {
+              area = new AreResource(entry);
+              item.put("data", serializeStructEntry(area, "$", -1, new IdentityHashMap<StructEntry, String>()));
+              result[0]++;
+            } catch (Exception e) {
+              Logger.error(e);
+              item.put("error", e.getMessage() != null ? e.getMessage() : e.getClass().getName());
+              result[1]++;
+            } finally {
+              if (area != null) {
+                try {
+                  area.close();
+                } catch (Exception e) {
+                  Logger.error(e);
+                }
+              }
+            }
+
+            if (i > 0) {
+              writer.write(",\n");
+            }
+            writer.write(item.toString(2));
+          }
+          writer.write("\n  ]\n}\n");
+          complete = !isCancelled();
+        } finally {
+          if (complete) {
+            Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING);
+          } else {
+            Files.deleteIfExists(temporary);
+          }
+        }
+        return result;
+      }
+
+      @Override
+      protected void process(List<Integer> chunks) {
+        if (!chunks.isEmpty()) {
+          final int index = chunks.get(chunks.size() - 1);
+          monitor.setProgress(index);
+          monitor.setNote(String.format("Area %d / %d", index + 1, resources.size()));
+        }
+      }
+
+      @Override
+      protected void done() {
+        monitor.close();
+        WindowBlocker.blockWindow(AreaViewer.this, false);
+        if (isCancelled()) {
+          return;
+        }
+        try {
+          final int[] result = get();
+          JOptionPane.showMessageDialog(AreaViewer.this,
+              String.format("Exported %d ARE resource(s) to:\n%s%s", result[0], destination,
+                  result[1] > 0 ? String.format("\n\n%d resource(s) contain an error item.", result[1]) : ""),
+              "Export ARE data", result[1] > 0 ? JOptionPane.WARNING_MESSAGE : JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception e) {
+          Logger.error(e);
+          JOptionPane.showMessageDialog(AreaViewer.this, "Could not export ARE resources:\n" + e.getMessage(),
+              "Export ARE data", JOptionPane.ERROR_MESSAGE);
+        }
+      }
+    }.execute();
+  }
+
+  /** Serializes a parsed structure entry without flattening duplicate or nested fields. */
+  private static JSONObject serializeStructEntry(StructEntry entry, String path, int index,
+      IdentityHashMap<StructEntry, String> visited) {
+    final String previousPath = visited.put(entry, path);
+    if (previousPath != null) {
+      return new JSONObject().put("$ref", previousPath);
+    }
+
+    final JSONObject object = new JSONObject();
+    if (index >= 0) {
+      object.put("index", index);
+    }
+    object.put("path", path);
+    object.put("name", entry.getName());
+    object.put("kind", entry instanceof AbstractStruct ? "struct" : "field");
+    object.put("javaType", entry.getClass().getName());
+    object.put("offset", entry.getOffset());
+    object.put("relativeOffset", entry.getParent() != null ? entry.getOffset() - entry.getParent().getOffset() : 0);
+    object.put("size", entry.getSize());
+
+    if (entry instanceof AbstractStruct) {
+      final JSONArray fields = new JSONArray();
+      final List<StructEntry> entries = ((AbstractStruct)entry).getFields();
+      for (int i = 0; i < entries.size(); i++) {
+        fields.put(serializeStructEntry(entries.get(i), path + "/fields/" + i, i, visited));
+      }
+      object.put("fields", fields);
+    } else {
+      object.put("displayValue", entry.toString());
+      if (entry instanceof IsNumeric) {
+        object.put("numericValue", ((IsNumeric)entry).getLongValue());
+      }
+      if (entry instanceof FloatNumber) {
+        object.put("floatingPointValue", ((FloatNumber)entry).getValue());
+      }
+      if (entry instanceof IsTextual) {
+        object.put("textValue", ((IsTextual)entry).getText());
+      }
+      if (entry instanceof IsReference) {
+        object.put("resourceReference", ((IsReference)entry).getResourceName());
+      }
+      object.put("rawHex", toHexString(entry.getDataBuffer()));
+    }
+    return object;
+  }
+
+  /** Returns the remaining bytes of the specified buffer as a compact hexadecimal string. */
+  private static String toHexString(ByteBuffer buffer) {
+    final char[] digits = "0123456789abcdef".toCharArray();
+    final StringBuilder result = new StringBuilder(buffer.remaining() * 2);
+    while (buffer.hasRemaining()) {
+      final int value = buffer.get() & 0xff;
+      result.append(digits[value >>> 4]).append(digits[value & 0x0f]);
+    }
+    return result.toString();
+  }
+
   // ----------------------------- INNER CLASSES -----------------------------
 
   /** Handles all events of the viewer. */
@@ -3073,6 +3261,8 @@ public class AreaViewer extends ChildFrame {
         // }
       } else if (event.getSource() == tbExportPNG) {
         exportMap();
+      } else if (event.getSource() == tbExportJson) {
+        exportAllAreasJson();
       }
     }
 
