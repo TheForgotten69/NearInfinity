@@ -34,6 +34,7 @@ import org.infinity.resource.are.viewer.AreaViewer;
 
 final class Viewer extends JPanel implements ActionListener {
   private static final String CMD_VIEWAREA = "ViewArea";
+  private static final String CMD_EXPORTAREJSON = "ExportAreJson";
 
   private final AreResource are;
 
@@ -93,7 +94,15 @@ final class Viewer extends JPanel implements ActionListener {
     bView.setActionCommand(CMD_VIEWAREA);
     bView.addActionListener(this);
     bView.setEnabled(AreaViewer.isValid(are));
-    fieldBasePanel.add(bView, BorderLayout.SOUTH);
+
+    JButton bExportJson = new JButton("Export all AREs", Icons.ICON_EXPORT_16.getIcon());
+    bExportJson.setActionCommand(CMD_EXPORTAREJSON);
+    bExportJson.addActionListener(this);
+
+    JPanel buttonPanel = new JPanel(new GridLayout(1, 2, 4, 0));
+    buttonPanel.add(bView);
+    buttonPanel.add(bExportJson);
+    fieldBasePanel.add(buttonPanel, BorderLayout.SOUTH);
 
     JScrollPane scrollPane = new JScrollPane(fieldBasePanel);
     scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
@@ -154,6 +163,8 @@ final class Viewer extends JPanel implements ActionListener {
       if (are.showAreaViewer(this) == null) {
         JOptionPane.showMessageDialog(this, "Area Viewer could not be opened.", "Error", JOptionPane.ERROR_MESSAGE);
       }
+    } else if (event.getActionCommand().equals(CMD_EXPORTAREJSON)) {
+      AreaViewer.exportAllAreasJson(this);
     }
   }
 

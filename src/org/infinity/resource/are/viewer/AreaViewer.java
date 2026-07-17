@@ -2807,13 +2807,15 @@ public class AreaViewer extends ChildFrame {
   }
 
   /** Exports every available ARE resource as an item in a structured JSON collection. */
-  private void exportAllAreasJson() {
+  public static void exportAllAreasJson(Component parentComponent) {
+    final Window owner = (parentComponent instanceof Window) ? (Window)parentComponent
+        : SwingUtilities.getWindowAncestor(parentComponent);
     final JFileChooser chooser = new JFileChooser(Profile.getGameRoot().toFile());
     chooser.setDialogTitle("Export all ARE resources as JSON");
     chooser.setDialogType(JFileChooser.SAVE_DIALOG);
     chooser.setFileFilter(new FileNameExtensionFilter("JSON files (*.json)", "json"));
     chooser.setSelectedFile(new File("ARE_DATA.JSON"));
-    if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+    if (chooser.showSaveDialog(parentComponent) != JFileChooser.APPROVE_OPTION) {
       return;
     }
 
@@ -2821,7 +2823,7 @@ public class AreaViewer extends ChildFrame {
     if (!outputFile.getFileName().toString().toLowerCase(Locale.ENGLISH).endsWith(".json")) {
       outputFile = outputFile.resolveSibling(outputFile.getFileName() + ".json");
     }
-    if (Files.exists(outputFile) && JOptionPane.showConfirmDialog(this,
+    if (Files.exists(outputFile) && JOptionPane.showConfirmDialog(parentComponent,
         "File already exists:\n" + outputFile + "\nOverwrite?", "Export ARE data",
         JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE) != JOptionPane.YES_OPTION) {
       return;
@@ -2830,11 +2832,13 @@ public class AreaViewer extends ChildFrame {
     final Path destination = outputFile;
     final List<ResourceEntry> resources = new ArrayList<>(ResourceFactory.getResources("ARE"));
     resources.sort((entry1, entry2) -> entry1.getResourceName().compareToIgnoreCase(entry2.getResourceName()));
-    final ProgressMonitor monitor = new ProgressMonitor(this, "Exporting ARE resources...", "", 0,
+    final ProgressMonitor monitor = new ProgressMonitor(parentComponent, "Exporting ARE resources...", "", 0,
         resources.size());
     monitor.setMillisToDecideToPopup(0);
     monitor.setMillisToPopup(0);
-    WindowBlocker.blockWindow(this, true);
+    if (owner != null) {
+      WindowBlocker.blockWindow(owner, true);
+    }
 
     new SwingWorker<int[], Integer>() {
       @Override
@@ -2903,19 +2907,21 @@ public class AreaViewer extends ChildFrame {
       @Override
       protected void done() {
         monitor.close();
-        WindowBlocker.blockWindow(AreaViewer.this, false);
+        if (owner != null) {
+          WindowBlocker.blockWindow(owner, false);
+        }
         if (isCancelled()) {
           return;
         }
         try {
           final int[] result = get();
-          JOptionPane.showMessageDialog(AreaViewer.this,
+          JOptionPane.showMessageDialog(parentComponent,
               String.format("Exported %d ARE resource(s) to:\n%s%s", result[0], destination,
                   result[1] > 0 ? String.format("\n\n%d resource(s) contain an error item.", result[1]) : ""),
               "Export ARE data", result[1] > 0 ? JOptionPane.WARNING_MESSAGE : JOptionPane.INFORMATION_MESSAGE);
         } catch (Exception e) {
           Logger.error(e);
-          JOptionPane.showMessageDialog(AreaViewer.this, "Could not export ARE resources:\n" + e.getMessage(),
+          JOptionPane.showMessageDialog(parentComponent, "Could not export ARE resources:\n" + e.getMessage(),
               "Export ARE data", JOptionPane.ERROR_MESSAGE);
         }
       }
@@ -3262,7 +3268,7 @@ public class AreaViewer extends ChildFrame {
       } else if (event.getSource() == tbExportPNG) {
         exportMap();
       } else if (event.getSource() == tbExportJson) {
-        exportAllAreasJson();
+        exportAllAreasJson(AreaViewer.this);
       }
     }
 
