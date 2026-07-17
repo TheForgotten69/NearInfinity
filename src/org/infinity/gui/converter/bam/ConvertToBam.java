@@ -2546,6 +2546,101 @@ public class ConvertToBam extends ChildFrame implements ActionListener, Property
     framesAdd(files, listFrames.getSelectedIndex());
   }
 
+  /**
+   * Imports an ordered image sequence as a single BAM cycle.
+   *
+   * @param files        Ordered image files to import.
+   * @param sourceCenter Center point of the source canvas. Specify {@code null} to center every imported frame.
+   * @param sourceSize   Dimensions of the source canvas. Used to scale {@code sourceCenter} to resized images.
+   * @param outputFile   Suggested output BAM path.
+   * @return {@code true} if at least one frame was imported, {@code false} otherwise.
+   */
+  public boolean framesImportSequence(Path[] files, Point sourceCenter, Dimension sourceSize, Path outputFile) {
+    if (files == null || files.length == 0) {
+      return false;
+    }
+
+    // Validate the complete sequence before a possible replacement discards an existing converter session.
+    for (final Path file : files) {
+      try {
+        final BufferedImage image = (file != null) ? ImageIO.read(file.toFile()) : null;
+        if (image == null) {
+          throw new IOException("Unsupported or invalid image");
+        }
+        image.flush();
+      } catch (Exception e) {
+        Logger.error(e);
+        JOptionPane.showMessageDialog(this, "Could not read PNG frame:\n" + file, "Import image sequence",
+            JOptionPane.ERROR_MESSAGE);
+        return false;
+      }
+    }
+
+    boolean replace = true;
+    if (!modelFrames.isEmpty() || !modelCycles.isEmpty()) {
+      final String[] options = { "Replace", "Append", "Cancel" };
+      final int result = JOptionPane.showOptionDialog(this,
+          "The BAM Converter already contains animation data.", "Import image sequence",
+          JOptionPane.YES_NO_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE, null, options, options[0]);
+      if (result < 0 || result == 2) {
+        return false;
+      }
+      replace = (result == 0);
+    }
+
+    if (replace) {
+      clear();
+    }
+
+    final int frameBase = modelFrames.getSize();
+    final List<Integer> frameIndices = new ArrayList<>(files.length);
+    final List<Path> skippedFiles = new ArrayList<>();
+    for (final Path file : files) {
+      final int frameIndex = modelFrames.getSize();
+      if (file != null && framesAddImage(frameIndex, file, -1) && modelFrames.getSize() == frameIndex + 1) {
+        final PseudoBamFrameEntry frame = modelFrames.getDecoder().getFrameInfo(frameIndex);
+        if (sourceCenter != null && sourceSize != null && sourceSize.width > 0 && sourceSize.height > 0) {
+          frame.setCenterX((int)Math.round(sourceCenter.x * frame.getWidth() / (double)sourceSize.width));
+          frame.setCenterY((int)Math.round(sourceCenter.y * frame.getHeight() / (double)sourceSize.height));
+        } else {
+          frame.setCenterX(frame.getWidth() / 2);
+          frame.setCenterY(frame.getHeight() / 2);
+        }
+        frameIndices.add(frameIndex);
+      } else {
+        skippedFiles.add(file);
+      }
+    }
+
+    if (frameIndices.isEmpty()) {
+      JOptionPane.showMessageDialog(this, "None of the selected PNG frames could be imported.",
+          "Import image sequence", JOptionPane.ERROR_MESSAGE);
+      return false;
+    }
+
+    final int[] cycleFrames = new int[frameIndices.size()];
+    for (int i = 0; i < cycleFrames.length; i++) {
+      cycleFrames[i] = frameIndices.get(i);
+    }
+    cyclesAdd(modelCycles.getSize(), cycleFrames);
+    if (replace || getBamOutput() == null) {
+      setBamOutput(outputFile);
+    }
+
+    outputSetModified(true);
+    updateFramesList();
+    listFrames.setSelectedIndex(frameBase);
+    listFrames.ensureIndexIsVisible(frameBase);
+    tpMain.setSelectedIndex(TAB_FRAMES);
+    if (!skippedFiles.isEmpty()) {
+      JOptionPane.showMessageDialog(this,
+          String.format("Imported %d frame(s). %d file(s) could not be imported.", frameIndices.size(),
+              skippedFiles.size()),
+          "Import image sequence", JOptionPane.WARNING_MESSAGE);
+    }
+    return true;
+  }
+
   /** Called by framesAddLauncher. Can also be called directly. Makes use of a progress monitor if available. */
   public void framesAdd(Path[] files, int insertIndex) {
     if (files != null) {

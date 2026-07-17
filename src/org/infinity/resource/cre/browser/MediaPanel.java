@@ -7,11 +7,13 @@ package org.infinity.resource.cre.browser;
 import java.awt.AlphaComposite;
 import java.awt.BorderLayout;
 import java.awt.Color;
+import java.awt.Dimension;
 import java.awt.Graphics2D;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Image;
 import java.awt.Insets;
+import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
@@ -20,11 +22,15 @@ import java.awt.event.ItemListener;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Hashtable;
 import java.util.List;
 import java.util.Objects;
+import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.imageio.ImageIO;
 import javax.swing.DefaultComboBoxModel;
@@ -44,8 +50,10 @@ import javax.swing.event.ChangeListener;
 import javax.swing.filechooser.FileFilter;
 import javax.swing.filechooser.FileNameExtensionFilter;
 
+import org.infinity.gui.ChildFrame;
 import org.infinity.gui.ViewerUtil;
 import org.infinity.gui.WindowBlocker;
+import org.infinity.gui.converter.bam.ConvertToBam;
 import org.infinity.resource.Profile;
 import org.infinity.resource.cre.CreResource;
 import org.infinity.resource.cre.browser.icon.Icons;
@@ -85,6 +93,7 @@ public class MediaPanel extends JPanel {
   private JButton bPlay;
   private JButton bStop;
   private JButton bExport;
+  private JButton bImport;
   private DefaultComboBoxModel<Sequence> modelSequences;
   private JComboBox<Sequence> cbSequences;
   private JCheckBox cbLoop;
@@ -551,6 +560,10 @@ public class MediaPanel extends JPanel {
     bExport.setToolTipText("Export animation sequence to graphics file");
     bExport.addActionListener(listeners);
 
+    bImport = new JButton("PNG to BAM...", org.infinity.icon.Icons.ICON_OPEN_16.getIcon());
+    bImport.setToolTipText("Import an exported PNG frame sequence into the BAM Converter");
+    bImport.addActionListener(listeners);
+
     JPanel pColumn3 = new JPanel(new GridBagLayout());
     c = ViewerUtil.setGBC(c, 0, 0, 1, 1, 0.0, 0.0, GridBagConstraints.FIRST_LINE_START, GridBagConstraints.NONE,
         new Insets(0, 0, 0, 0), 0, 0);
@@ -558,6 +571,9 @@ public class MediaPanel extends JPanel {
     c = ViewerUtil.setGBC(c, 0, 1, 1, 1, 0.0, 0.0, GridBagConstraints.FIRST_LINE_START, GridBagConstraints.NONE,
         new Insets(8, 0, 0, 0), 0, 0);
     pColumn3.add(bExport, c);
+    c = ViewerUtil.setGBC(c, 0, 2, 1, 1, 0.0, 0.0, GridBagConstraints.FIRST_LINE_START, GridBagConstraints.NONE,
+        new Insets(4, 0, 0, 0), 0, 0);
+    pColumn3.add(bImport, c);
 
     // combining panels
     JPanel panelMain = new JPanel(new GridBagLayout());
@@ -602,6 +618,7 @@ public class MediaPanel extends JPanel {
     cbSequences.setEnabled(modelSequences.getSize() > 0);
     cbLoop.setEnabled(loaded);
     slDirection.setEnabled(loaded && slDirection.getMaximum() > slDirection.getMinimum());
+    bImport.setEnabled(loaded);
     updateLabels();
   }
 
@@ -738,6 +755,93 @@ public class MediaPanel extends JPanel {
   /** Returns the {@code Direction} of the specified direction slider position. Defaults to {@code Direction.S}. */
   private Direction getDirection(int index) {
     return directionMap.getOrDefault(index, Direction.S);
+  }
+
+  /** Loads an exported PNG frame sequence into the BAM Converter. */
+  private void importPngSequence() {
+    final JFileChooser chooser = new JFileChooser(Profile.getGameRoot().toFile());
+    chooser.setDialogTitle("Select an exported PNG sequence frame");
+    chooser.setDialogType(JFileChooser.OPEN_DIALOG);
+    chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+    chooser.setFileFilter(new FileNameExtensionFilter("PNG frame sequences (*-000.png)", "png"));
+    if (chooser.showOpenDialog(browser) != JFileChooser.APPROVE_OPTION) {
+      return;
+    }
+
+    final File selectedFile = chooser.getSelectedFile();
+    final Matcher selectedMatcher = Pattern.compile("^(.*-)(\\d+)(\\.png)$", Pattern.CASE_INSENSITIVE)
+        .matcher(selectedFile.getName());
+    if (!selectedMatcher.matches()) {
+      JOptionPane.showMessageDialog(browser,
+          "The selected filename does not end in a numeric frame index (for example: animation-000.png).",
+          "Invalid frame sequence", JOptionPane.ERROR_MESSAGE);
+      return;
+    }
+
+    final String prefix = selectedMatcher.group(1);
+    final Pattern sequencePattern = Pattern.compile("^" + Pattern.quote(prefix) + "(\\d+)\\.png$",
+        Pattern.CASE_INSENSITIVE);
+    final TreeMap<Integer, Path> frameMap = new TreeMap<>();
+    final File directory = selectedFile.getParentFile();
+    final File[] candidates = (directory != null) ? directory.listFiles() : null;
+    if (candidates != null) {
+      for (final File candidate : candidates) {
+        final Matcher matcher = sequencePattern.matcher(candidate.getName());
+        if (candidate.isFile() && matcher.matches()) {
+          try {
+            final int frameIndex = Integer.parseInt(matcher.group(1));
+            if (frameMap.put(frameIndex, candidate.toPath()) != null) {
+              throw new Exception("Duplicate frame index: " + frameIndex);
+            }
+          } catch (Exception e) {
+            Logger.error(e);
+            JOptionPane.showMessageDialog(browser, "Invalid or duplicate frame index in the selected sequence.",
+                "Invalid frame sequence", JOptionPane.ERROR_MESSAGE);
+            return;
+          }
+        }
+      }
+    }
+
+    int expectedIndex = 0;
+    for (final int frameIndex : frameMap.keySet()) {
+      if (frameIndex != expectedIndex) {
+        JOptionPane.showMessageDialog(browser,
+            String.format("The PNG sequence has a missing frame index (expected %03d).", expectedIndex),
+            "Incomplete frame sequence", JOptionPane.ERROR_MESSAGE);
+        return;
+      }
+      expectedIndex++;
+    }
+    if (frameMap.isEmpty()) {
+      JOptionPane.showMessageDialog(browser, "No numbered PNG frames were found.", "Empty frame sequence",
+          JOptionPane.ERROR_MESSAGE);
+      return;
+    }
+
+    final String[] alignmentOptions = { "Use current animation alignment", "Center imported frames", "Cancel" };
+    final int alignment = JOptionPane.showOptionDialog(browser,
+        "PNG files do not store BAM center coordinates.\n"
+            + "Use the currently displayed animation alignment for a round trip, or center the imported frames.",
+        "Frame alignment", JOptionPane.YES_NO_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE, null, alignmentOptions,
+        alignmentOptions[0]);
+    if (alignment < 0 || alignment == 2) {
+      return;
+    }
+
+    Point sourceCenter = null;
+    Dimension sourceSize = null;
+    if (alignment == 0 && getController() != null) {
+      final Point origin = getController().getSharedOrigin();
+      sourceCenter = new Point(-origin.x, -origin.y);
+      sourceSize = getController().getSharedDimension();
+    }
+
+    final Path[] frames = frameMap.values().toArray(new Path[frameMap.size()]);
+    final String outputName = prefix.substring(0, prefix.length() - 1) + ".BAM";
+    final Path outputFile = ((directory != null) ? directory.toPath() : new File(".").toPath()).resolve(outputName);
+    final ConvertToBam converter = ChildFrame.show(ConvertToBam.class, ConvertToBam::new);
+    converter.framesImportSequence(frames, sourceCenter, sourceSize, outputFile);
   }
 
   /** Interactive export of the current animation sequence to an animation file. */
@@ -958,6 +1062,8 @@ public class MediaPanel extends JPanel {
         stop();
       } else if (e.getSource() == bExport) {
         exportBamSequence();
+      } else if (e.getSource() == bImport) {
+        importPngSequence();
       }
     }
 
